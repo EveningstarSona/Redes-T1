@@ -5,6 +5,7 @@ import re
 from sys import platform
 import socket
 
+
 if platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
@@ -34,7 +35,7 @@ class Conexao:
             self.s, lambda: callback(self, self.s.recv(8192)))
 
     def enviar(self, dados: bytes):
-        print(f'{self}.enviar({dados})')
+        # print(f'{self}.enviar({dados})')
         self.s.sendall(dados)
 
     def fechar(self):
@@ -42,7 +43,7 @@ class Conexao:
         self.s.close()
 
     def adicionar_dados(self, dados, COMANDOS):
-        print(f'  {self}.adicionar_dados({dados}, COMANDOS)')
+        # print(f'  {self}.adicionar_dados({dados}, COMANDOS)')
         self.intermediate += dados.decode()
         if '\r\n' in self.intermediate:
             aux = self.intermediate.split('\r\n')
@@ -51,7 +52,7 @@ class Conexao:
             self.intermediate = aux[-1]
 
     def lidar_com_dados(self, dados, COMANDOS):
-        print(f'   {self}.lidar_com_dados({dados}, COMANDOS)')
+        # print(f'   {self}.lidar_com_dados({dados}, COMANDOS)')
         if (data := dados.split(' '))[0] in COMANDOS:
             COMANDOS[data[0]](self, data[1:])
 
@@ -65,12 +66,12 @@ def lower_nomes():
 
 
 def ping(conexao: Conexao, params: list[str]):
-    print(f'ping({conexao}, {params})')
+    # print(f'ping({conexao}, {params})')
     conexao.enviar(f':server PONG server :{" ".join(params)}\r\n'.encode())
 
 
 def nick(conexao: Conexao, params: list[str]):
-    print(f'    nick({conexao}, {params})')
+    # print(f'    nick({conexao}, {params})')
     nickname = " ".join(params)
     invalido = True
     if validar_nome(nickname.encode()):
@@ -98,7 +99,7 @@ def nick(conexao: Conexao, params: list[str]):
 
 
 def broadcast_to_channel(conexao: Conexao, params: list[str]):
-    print(f'     broadcast_to_channel({conexao}, {params})')
+    # print(f'     broadcast_to_channel({conexao}, {params})')
     channel, message = params
     if channel[0] == '#':
         channel = channel[1:]
@@ -111,7 +112,7 @@ def broadcast_to_channel(conexao: Conexao, params: list[str]):
 
 
 def privmsg_to_channel(conexao: Conexao, params: list[str]):
-    print(f'     privmsg_to_channel({conexao}, {params})')
+    # print(f'     privmsg_to_channel({conexao}, {params})')
     channel, msg = params
     if channel[0] == '#':
         channel = channel[1:]
@@ -122,7 +123,7 @@ def privmsg_to_channel(conexao: Conexao, params: list[str]):
 
 
 def privmsg_to_person(conexao: Conexao, params: list[str]):
-    print(f'     privmsg_to_person({conexao}, {params})')
+    # print(f'     privmsg_to_person({conexao}, {params})')
     dest, cont = params
     cont = cont[1:]
     for c, n in zip(NOMES.keys(), lower_nomes()):
@@ -132,7 +133,7 @@ def privmsg_to_person(conexao: Conexao, params: list[str]):
 
 
 def privmsg(conexao: Conexao, params: list[str]):
-    print(f'    privmsg({conexao}, {params})')
+    # print(f'    privmsg({conexao}, {params})')
     if params[0][0] == '#':
         privmsg_to_channel(conexao, params)
     else:
@@ -140,7 +141,7 @@ def privmsg(conexao: Conexao, params: list[str]):
 
 
 def join(conexao: Conexao, params: list[str]):
-    print(f'    join({conexao}, {params})')
+    # print(f'    join({conexao}, {params})')
     channel = params[0][1:]
     if not validar_nome(channel.encode()):
         conexao.enviar(f':server 403 {channel} :No such channel\r\n'.encode())
@@ -163,7 +164,7 @@ def join(conexao: Conexao, params: list[str]):
 
 
 def part(conexao: Conexao, params: list[str]):
-    print(f'    part({conexao}, {params})')
+    # print(f'    part({conexao}, {params})')
     channel = params[0]
     if conexao in CANAIS[channel[1:].lower()]:
         broadcast_to_channel(
@@ -185,7 +186,7 @@ def validar_nome(nome: str):
 
 
 def sair(conexao: Conexao):
-    print(f'sair({conexao})')
+    # print(f'sair({conexao})')
     for c, l in CANAIS.items():
         if conexao in l:
             CANAIS[c].remove(conexao)
@@ -197,14 +198,14 @@ def sair(conexao: Conexao):
 
 
 def dados_recebidos(conexao: Conexao, dados: str | bytes):
-    print(f' dados_recebidos({conexao}, {dados})')
+    # print(f' dados_recebidos({conexao}, {dados})')
     if dados == b'':
         return sair(conexao)
     conexao.adicionar_dados(dados, COMANDOS)
 
 
 def conexao_aceita(conexao: Conexao):
-    print(f'conexao_aceita({conexao})')
+    # print(f'conexao_aceita({conexao})')
     if conexao not in NOMES:
         NOMES.update({conexao: '*'})
     conexao.registrar_recebedor(dados_recebidos)
