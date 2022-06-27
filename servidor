@@ -1,26 +1,212 @@
 #!/usr/bin/env python3
 import asyncio
-from tcp import Servidor
+from typing import Any, Callable
 import re
+from sys import platform
+import socket
+
+if platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 
-def validar_nome(nome):
+class Servidor:
+    def __init__(self, porta: int):
+        s = self.s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(('', porta))
+        s.listen(5)
+
+    def registrar_monitor_de_conexoes_aceitas(self, callback: Callable):
+        asyncio.get_event_loop().add_reader(
+            self.s, lambda: callback(Conexao(self.s.accept())))
+
+
+class Conexao:
+    def __init__(self, accept_tuple: tuple[socket.socket, Any]):
+        self.intermediate: str = ''
+        self.s, self.a = accept_tuple
+
+    def __str__(self):
+        return f'{self.a[1]}'
+
+    def registrar_recebedor(self, callback: Callable):
+        asyncio.get_event_loop().add_reader(
+            self.s, lambda: callback(self, self.s.recv(8192)))
+
+    def enviar(self, dados: bytes):
+        print(f'{self}.enviar({dados})')
+        self.s.sendall(dados)
+
+    def fechar(self):
+        asyncio.get_event_loop().remove_reader(self.s)
+        self.s.close()
+
+    def adicionar_dados(self, dados, COMANDOS):
+        print(f'  {self}.adicionar_dados({dados}, COMANDOS)')
+        self.intermediate += dados.decode()
+        if '\r\n' in self.intermediate:
+            aux = self.intermediate.split('\r\n')
+            for full_data in aux[:-1]:
+                self.lidar_com_dados(full_data, COMANDOS)
+            self.intermediate = aux[-1]
+
+    def lidar_com_dados(self, dados, COMANDOS):
+        print(f'   {self}.lidar_com_dados({dados}, COMANDOS)')
+        if (data := dados.split(' '))[0] in COMANDOS:
+            COMANDOS[data[0]](self, data[1:])
+
+
+NOMES: dict[Conexao, str] = {}
+CANAIS: dict[str, list[Conexao]] = {}
+
+
+def lower_nomes():
+    return list(map(lambda x: x.lower(), NOMES.values()))
+
+
+def ping(conexao: Conexao, params: list[str]):
+    print(f'ping({conexao}, {params})')
+    conexao.enviar(f':server PONG server :{" ".join(params)}\r\n'.encode())
+
+
+def nick(conexao: Conexao, params: list[str]):
+    print(f'    nick({conexao}, {params})')
+    nickname = " ".join(params)
+    invalido = True
+    if validar_nome(nickname.encode()):
+        if nickname.lower() in lower_nomes():
+            # Nome já escolhido
+            conexao.enviar(
+                f':server 433 {NOMES[conexao]} {nickname} :Nickname is already in use\r\n'.encode())
+        else:
+            if NOMES[conexao] == '*':
+                # Nome aceito
+                conexao.enviar(f':server 001 {nickname} :Welcome\r\n'.encode())
+                conexao.enviar(
+                    f':server 422 {nickname} :MOTD File is missing\r\n'.encode())
+            else:
+                # Nome trocado
+                conexao.enviar(
+                    f':{NOMES[conexao]} NICK {nickname}\r\n'.encode())
+            invalido = False
+    else:
+        # Nome inválido
+        conexao.enviar(
+            f':server 432 {NOMES[conexao]} {nickname} :Erroneous nickname\r\n'.encode())
+    if not invalido:
+        NOMES[conexao] = nickname
+
+
+def broadcast_to_channel(conexao: Conexao, params: list[str]):
+    print(f'     broadcast_to_channel({conexao}, {params})')
+    channel, message = params
+    if channel[0] == '#':
+        channel = channel[1:]
+    if len(CANAIS[channel.lower()]) == 0:
+        return
+    if message[-2:] != '\r\n':
+        message += '\r\n'
+    for conn in CANAIS[channel.lower()]:
+        conn.enviar(message.encode())
+
+
+def privmsg_to_channel(conexao: Conexao, params: list[str]):
+    print(f'     privmsg_to_channel({conexao}, {params})')
+    channel, msg = params
+    if channel[0] == '#':
+        channel = channel[1:]
+    for conn in CANAIS[channel.lower()]:
+        if conn != conexao:
+            conn.enviar(
+                f':{NOMES[conexao]} PRIVMSG #{channel} {msg}\r\n'.encode())
+
+
+def privmsg_to_person(conexao: Conexao, params: list[str]):
+    print(f'     privmsg_to_person({conexao}, {params})')
+    dest, cont = params
+    cont = cont[1:]
+    for c, n in zip(NOMES.keys(), lower_nomes()):
+        if n == dest.lower():
+            c.enviar(f':{NOMES[conexao]} PRIVMSG {n} :{cont}\r\n'.encode())
+            break
+
+
+def privmsg(conexao: Conexao, params: list[str]):
+    print(f'    privmsg({conexao}, {params})')
+    if params[0][0] == '#':
+        privmsg_to_channel(conexao, params)
+    else:
+        privmsg_to_person(conexao, params)
+
+
+def join(conexao: Conexao, params: list[str]):
+    print(f'    join({conexao}, {params})')
+    channel = params[0][1:]
+    if not validar_nome(channel.encode()):
+        conexao.enviar(f':server 403 {channel} :No such channel\r\n'.encode())
+        return
+    if channel.lower() in CANAIS.keys():
+        CANAIS[channel.lower()].append(conexao)
+    else:
+        CANAIS.update({channel: [conexao]})
+    broadcast_to_channel(
+        conexao, [channel, f':{NOMES[conexao]} JOIN :#{channel}\r\n'])
+    members = " ".join(sorted([NOMES[c] for c in CANAIS[channel]]))
+    base = f':server 353 {NOMES[conexao]} = #{channel} :'
+    max_size = 512 - len(base)
+    while len(members) > max_size:
+        conexao.enviar(f'{base}{members[:max_size]}'.encode())
+        members = members[max_size:]
+    conexao.enviar(f'{base}{members}\r\n'.encode())
+    conexao.enviar(
+        f':server 366 {NOMES[conexao]} #{channel} :End of /NAMES list.\r\n'.encode())
+
+
+def part(conexao: Conexao, params: list[str]):
+    print(f'    part({conexao}, {params})')
+    channel = params[0]
+    if conexao in CANAIS[channel[1:].lower()]:
+        broadcast_to_channel(
+            conexao, [channel, f':{NOMES[conexao]} PART {channel}'])
+        CANAIS[channel[1:].lower()].remove(conexao)
+
+
+COMANDOS = {
+    'PING': ping,
+    'NICK': nick,
+    'PRIVMSG': privmsg,
+    'JOIN': join,
+    'PART': part
+}
+
+
+def validar_nome(nome: str):
     return re.match(br'^[a-zA-Z][a-zA-Z0-9_-]*$', nome) is not None
 
 
-def sair(conexao):
-    print(conexao, 'conexão fechada')
+def sair(conexao: Conexao):
+    print(f'sair({conexao})')
+    for c, l in CANAIS.items():
+        if conexao in l:
+            CANAIS[c].remove(conexao)
+            broadcast_to_channel(
+                conexao, [c, f':{NOMES[conexao]} QUIT :Connection closed'])
+    if conexao in NOMES:
+        NOMES.pop(conexao)
     conexao.fechar()
 
 
-def dados_recebidos(conexao, dados):
+def dados_recebidos(conexao: Conexao, dados: str | bytes):
+    print(f' dados_recebidos({conexao}, {dados})')
     if dados == b'':
         return sair(conexao)
-    print(conexao, dados)
+    conexao.adicionar_dados(dados, COMANDOS)
 
 
-def conexao_aceita(conexao):
-    print(conexao, 'nova conexão')
+def conexao_aceita(conexao: Conexao):
+    print(f'conexao_aceita({conexao})')
+    if conexao not in NOMES:
+        NOMES.update({conexao: '*'})
     conexao.registrar_recebedor(dados_recebidos)
 
 
